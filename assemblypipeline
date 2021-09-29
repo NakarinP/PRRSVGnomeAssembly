@@ -1,0 +1,117 @@
+#!/bin/bash
+
+#to do list: 	put all barcode folders which contain *.fastq files of each into basedir
+#				put both the guided genome (for scaffolding) and the reference genome (for annotation) into basedir
+#				specify full path of basedir, file name of the genomes without file extension, and the range of barcode numbers in this script
+
+basedir=/home/PRRSVsamples
+
+#apply loop function to barcodes 01-n
+	for number in 0{1..9} {10..99} {100..120}
+	do
+		basedir=/home/PRRSVsamples
+		refscaffold=MH651739
+		refannotate=NC_001961
+		barcode=barcode${number}	
+
+	#concatenate fastq files for each
+	cd $basedir 
+	mkdir fastq
+	cat $basedir/${barcode}/*.fastq > $basedir/fastq/${barcode}.fastq	
+
+	#De novo assembly by Canu
+	mkdir canu-out
+	/home/biolinux/canu-1.9/Linux-amd64/bin/canu \
+	  -p $barcode -d $basedir/canu-out/$barcode \
+	  genomeSize=15k \
+	  stopOnReadQuality=false \
+	  minThreads=14 \
+	  -nanopore-raw $basedir/fastq/${barcode}.fastq	
+
+	#reference-guided scaffolding of contigs by RaGOO
+	mkdir ragoo-out
+	cd ragoo-out
+		mkdir ${barcode}
+	    cd ${barcode}
+		ln -s $basedir/canu-out/$barcode/${barcode}.contigs.fasta
+		ln -s $basedir/$refscaffold.fasta
+		~/anaconda3/bin/ragoo.py -m /home/biolinux/minimap2-2.17_x64-linux/minimap2 \
+		-R $basedir/fastq/${barcode}.fastq -T corr -t 14 ${barcode}.contigs.fasta $refscaffold.fasta
+			cd ragoo_output 
+			mv ragoo.fasta ../../${barcode}.ragoo.fasta
+		cd ../../
+	#rename fasta header then keep only the first sequence from multifasta file
+	awk '/^>/{print ">" substr(FILENAME,1,length(FILENAME)-12); next} 1' ${barcode}.ragoo.fasta | awk '/^>/{if(N)exit;++N;} {print;}' > ${barcode}.fasta
+	cd ../	
+
+	#annotate genome by PROKKA
+	mkdir prokka-out
+	mkdir annotatedgenes
+	mkdir consensusseq
+	  /home/biolinux/prokka/bin/prokka \
+	        --outdir $basedir/prokka-out/$barcode --prefix $barcode --addgenes \
+	        --genus Arterivirus \
+	        --kingdom Viruses --gcode 1 --usegenus \
+	        --proteins $basedir/$refannotate.gb \
+	        $basedir/ragoo-out/${barcode}.fasta
+	cd $basedir/prokka-out/$barcode
+	#copy *.ffn and *.fsa files to separate folders
+		cp ${barcode}.ffn $basedir/annotatedgenes
+		cp ${barcode}.fsa $basedir/consensusseq
+	cd ../../	
+
+	#rename *.ffn header, then pool genes from all barcode in the "gene" folder, and substitute space in name with "_"
+	cd $basedir/annotatedgenes
+	mkdir gene
+	awk '/>/{sub(">","&"FILENAME"_");sub(/\.ffn/,x)}1' ${barcode}.ffn > $basedir/annotatedgenes/gene/${barcode}.rename.ffn
+		cd gene
+		awk -F "|" '/^>/ {close(F); ID=$1; gsub("^>", "", ID); F=ID".fasta"} {print >> F}' ${barcode}.rename.ffn
+		for file in *; do mv "$file" `echo $file | tr ' ' '_' | tr -d '()'` ; done
+	cd ../../	
+
+	done
+
+#gene grouping
+cd $basedir/annotatedgenes/gene/
+mkdir gene_multifasta
+
+cat *_ORF_1ab_polyprotein.fasta > PRRSV_ORF_1ab_polyprotein.fasta
+cat *_nsp1_pcp1a_and_pcp1b.fasta > PRRSV_nsp1_pcp1a_and_pcp1b.fasta
+cat *_nsp2.fasta > PRRSV_nsp2.fasta
+cat *_hydrophobic_protein.fasta > PRRSV_hydrophobic_protein.fasta
+cat *_3C-like_serine_proteinase.fasta > PRRSV_3C-like_serine_proteinase.fasta
+cat *_hydrophobic_protein_2.fasta > PRRSV_hydrophobic_protein_2.fasta
+cat *_nsp6.fasta > PRRSV_nsp6.fasta
+cat *_nsp7.fasta > PRRSV_nsp7.fasta
+cat *_RNA-dependent_RNA_polymerase.fasta > PRRSV_RNA-dependent_RNA_polymerase.fasta
+cat *_nsp10_MB,_NTPase,_HEL.fasta > PRRSV_nsp10_MB,_NTPase,_HEL.fasta
+cat *_nsp11.fasta > PRRSV_nsp11.fasta
+cat *_nsp12.fasta > PRRSV_nsp12.fasta
+cat *_ORF1a_polyprotein.fasta > PRRSV_ORF1a_polyprotein.fasta
+cat *_nsp8.fasta > PRRSV_nsp8.fasta
+cat *_1aTF_polyprotein.fasta > PRRSV_1aTF_polyprotein.fasta
+cat *_nsp2TF_protein.fasta > PRRSV_nsp2TF_protein.fasta
+cat *_GP2_glycosylated_envelope_protein.fasta > PRRSV_GP2_glycosylated_envelope_protein.fasta
+cat *_E_protein.fasta > PRRSV_E_protein.fasta
+cat *_GP3_envelope_protein.fasta > PRRSV_GP3_envelope_protein.fasta
+cat *_GP4.fasta > PRRSV_GP4.fasta
+cat *_ORF5a_protein.fasta > PRRSV_ORF5a_protein.fasta
+cat *_GP5_glycosylated_envelope_protein.fasta > PRRSV_GP5_glycosylated_envelope_protein.fasta
+cat *_membrane_protein_M.fasta > PRRSV_membrane_protein_M.fasta
+cat *_nucleocapsid_protein_N.fasta > PRRSV_nucleocapsid_protein_N.fasta
+
+mv PRRSV*.fasta ./gene_multifasta
+
+
+#Multiple WGS alignment
+#concatenate fasta files with the references
+cd $basedir/consensusseq
+ln -s $basedir/$refscaffold.fasta
+ln -s $basedir/$refannotate.fasta
+cat *.fsa > prrsv.fasta
+cat *.fasta > prrsv-ref.fasta
+
+#multiple sequences alignment using MAFFT
+mafft --localpair --maxiterate 1000 --thread 14 prrsv-ref.fasta > prrsv-ref.aligned.fasta
+
+#copyright: Nakarin Pamornchainavakul
